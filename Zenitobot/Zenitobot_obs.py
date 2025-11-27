@@ -163,7 +163,7 @@ PLAYER_TERTIARY_INFO_LENGTH = 10
 PLAYER_INFO_LENGTH = 2 + 2 * PLAYER_CAR_STATE_LENGTH + PLAYER_TERTIARY_INFO_LENGTH
 
 
-class ZenObsBuilder(BatchedObsBuilder):
+class ZenitobotObsBuilder(BatchedObsBuilder):
     _invert = np.array([1] * 5 + [-1, -1, 1] * 5 + [1] * 4)
     _norm = np.array([1.] * 5 + [2300] * 6 + [1] * 6 + [5.5] * 3 + [1] * 4)
 

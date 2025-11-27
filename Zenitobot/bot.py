@@ -9,7 +9,7 @@ from rlbot.utils.structures.quick_chats import QuickChats
 from rlgym_compat import GameState
 
 from agent import Agent
-from Zenitobotitobot.Zenitobotitobot_obs import ZenitobotObsBuilder, BOOST_LOCATIONS
+from Zenitobot_obs import ZenitobotObsBuilder, BOOST_LOCATIONS
 
 KICKOFF_CONTROLS = (
         11 * 4 * [SimpleControllerState(throttle=1, boost=True)]
