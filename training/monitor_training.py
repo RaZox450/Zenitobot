@@ -4,9 +4,17 @@ Affiche les statistiques des checkpoints et la progression globale
 """
 
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 import json
+
+# Fix Windows encoding issues
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 def format_number(n):

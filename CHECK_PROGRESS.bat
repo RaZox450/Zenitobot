@@ -1,4 +1,4 @@
 @echo off
 chcp 65001 >nul
-python training\monitor_training.py
+"C:\Users\ethan\AppData\Local\RLBotGUIX\Python311\python.exe" training\monitor_training.py
 pause

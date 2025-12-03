@@ -1,10 +1,10 @@
 """
-ZENITOBOT PRO TRAINING - SSL+++ MECHANICS MASTERY
-==================================================
-Training ultra-avancé pour apprendre TOUTES les mécaniques de niveau professionnel
+ZENITOBOT PRO TRAINING - SSL+++ MECHANICS MASTERY + PRO GAMEPLAY
+==================================================================
+Training ultra-avancé pour apprendre TOUTES les mécaniques ET le gameplay pro
 Optimisé pour 2v2 avec système de checkpoints automatique
 
-Mécaniques couvertes:
+MÉCANIQUES COUVERTES:
 - Powershots (wall, upside down, air roll, ground, aerial)
 - Backboard clears/shots
 - Dribbling avancé (tous types de flicks, wavedash, etc.)
@@ -16,6 +16,19 @@ Mécaniques couvertes:
 - Ceiling shots, double taps, pinches
 - Shadow defense, squishy save, flip cancel
 - Turtle, stall, ceiling shuffle, hel jump
+
+JEU D'ÉQUIPE PRO (NOUVEAU):
+- Passing entre coéquipiers (passes offensives et aériennes)
+- Rotation intelligente (un attaque, un défend)
+- Positionnement stratégique (offensive/defensive)
+- Demos tactiques
+
+SMART PLAY (NOUVEAU):
+- Boost management (ne pas gaspiller)
+- Collecte de petits pads (efficacité)
+- Patience (ne pas ballchase)
+- Challenge timing (attendre le bon moment)
+- Jeu au sol approprié (pas aerial spam)
 """
 
 from typing import List, Dict, Any
@@ -742,6 +755,387 @@ class HalfFlipReward(RewardFunction[AgentID, GameState, float]):
 
 
 # ============================================================================
+# REWARD FUNCTIONS - JEU D'ÉQUIPE (STYLE PRO 2v2)
+# ============================================================================
+
+class PassingReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense les passes entre coéquipiers - comportement pro essentiel"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.last_touches = {agent: 0 for agent in agents}
+        self.last_toucher = None
+        self.pass_detected = False
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+        ball_pos = state.ball.position
+        ball_height = ball_pos[2]
+
+        for agent in agents:
+            car = state.cars[agent]
+            current_touches = car.ball_touches
+
+            if current_touches > self.last_touches[agent]:
+                # Nouvelle touche détectée
+                if self.last_toucher is not None and self.last_toucher != agent:
+                    # Touche par un autre joueur = potentielle passe
+                    last_car = state.cars[self.last_toucher]
+
+                    # Passe seulement si même équipe
+                    if last_car.is_orange == car.is_orange:
+                        # Distance entre les joueurs
+                        dist_between_players = np.linalg.norm(
+                            car.physics.position - last_car.physics.position
+                        )
+
+                        # Passe valide si joueurs pas trop proches (pas un 50/50)
+                        if dist_between_players > 800:
+                            base_reward = 8.0
+
+                            # Bonus si passe offensive (balle va vers le but adverse)
+                            if car.is_orange:
+                                opp_goal_y = -common_values.BACK_NET_Y
+                            else:
+                                opp_goal_y = common_values.BACK_NET_Y
+
+                            ball_vel_toward_goal = state.ball.linear_velocity[1] * (1 if opp_goal_y > 0 else -1)
+
+                            if ball_vel_toward_goal > 500:
+                                base_reward += 6.0  # Passe offensive
+
+                            # MEGA bonus si passe aérienne
+                            if ball_height > 400:
+                                base_reward += 5.0
+
+                            # Récompense les DEUX joueurs
+                            rewards[agent] = base_reward  # Receveur
+                            rewards[self.last_toucher] = base_reward * 0.8  # Passeur
+                        else:
+                            rewards[agent] = 0.0
+                    else:
+                        rewards[agent] = 0.0
+                else:
+                    rewards[agent] = 0.0
+
+                self.last_toucher = agent
+                self.last_touches[agent] = current_touches
+            else:
+                if agent not in rewards:
+                    rewards[agent] = 0.0
+
+        # Assurer que tous les agents ont une récompense
+        for agent in agents:
+            if agent not in rewards:
+                rewards[agent] = 0.0
+
+        return rewards
+
+
+class RotationReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense la rotation intelligente en 2v2 - un attaque, un défend"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        pass
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+
+        # Grouper par équipe
+        blue_agents = [a for a in agents if not state.cars[a].is_orange]
+        orange_agents = [a for a in agents if state.cars[a].is_orange]
+
+        def evaluate_team_rotation(team_agents, own_goal_y):
+            if len(team_agents) < 2:
+                return {agent: 0.0 for agent in team_agents}
+
+            team_rewards = {}
+            ball_pos = state.ball.position
+
+            # Calculer distances à la balle pour chaque coéquipier
+            distances = {}
+            for agent in team_agents:
+                car = state.cars[agent]
+                dist = np.linalg.norm(ball_pos - car.physics.position)
+                distances[agent] = dist
+
+            # Le plus proche devrait attaquer, le plus loin défendre
+            closest = min(distances, key=distances.get)
+            farthest = max(distances, key=distances.get)
+
+            for agent in team_agents:
+                car = state.cars[agent]
+                own_goal = np.array([0, own_goal_y, 100])
+                dist_to_goal = np.linalg.norm(car.physics.position - own_goal)
+
+                if agent == closest:
+                    # Joueur le plus proche = devrait être agressif
+                    if distances[agent] < 1000:  # Bien positionné offensivement
+                        team_rewards[agent] = 1.5
+                    else:
+                        team_rewards[agent] = 0.0
+                elif agent == farthest:
+                    # Joueur le plus loin = devrait être en couverture défensive
+                    if dist_to_goal < 3000:  # Reste proche du but
+                        team_rewards[agent] = 1.5  # Bonne rotation
+                    else:
+                        team_rewards[agent] = 0.0
+                else:
+                    team_rewards[agent] = 0.0
+
+            return team_rewards
+
+        # Évaluer chaque équipe
+        blue_rewards = evaluate_team_rotation(blue_agents, -common_values.BACK_NET_Y)
+        orange_rewards = evaluate_team_rotation(orange_agents, common_values.BACK_NET_Y)
+
+        rewards.update(blue_rewards)
+        rewards.update(orange_rewards)
+
+        return rewards
+
+
+class SmartPositioningReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense le positionnement intelligent type pro"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        pass
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+        ball_pos = state.ball.position
+
+        for agent in agents:
+            car = state.cars[agent]
+            car_pos = car.physics.position
+
+            if car.is_orange:
+                own_goal_y = common_values.BACK_NET_Y
+                opp_goal_y = -common_values.BACK_NET_Y
+            else:
+                own_goal_y = -common_values.BACK_NET_Y
+                opp_goal_y = common_values.BACK_NET_Y
+
+            own_goal = np.array([0, own_goal_y, 100])
+            opp_goal = np.array([0, opp_goal_y, 100])
+
+            # Distance à la balle
+            dist_to_ball = np.linalg.norm(ball_pos - car_pos)
+
+            # Si balle proche du but adverse = bon positionnement offensif
+            ball_to_opp_goal = np.linalg.norm(ball_pos - opp_goal)
+
+            if ball_to_opp_goal < 3000:  # Balle dans leur moitié
+                # Être proche mais pas trop = positioning offensif
+                if 800 < dist_to_ball < 2500:
+                    rewards[agent] = 1.0  # Bon support offensif
+                else:
+                    rewards[agent] = 0.0
+            else:
+                # Balle dans notre moitié = ne pas tous rusher
+                car_to_own_goal = np.linalg.norm(car_pos - own_goal)
+                if car_to_own_goal < 4000 and dist_to_ball > 1000:
+                    rewards[agent] = 0.8  # Bon positioning défensif
+                else:
+                    rewards[agent] = 0.0
+
+        return rewards
+
+
+# DÉSACTIVÉ - L'attribut 'demolitions' n'existe pas dans RLGym
+# class DemoPlayReward(RewardFunction[AgentID, GameState, float]):
+#     """Récompense les demos stratégiques - tactique pro"""
+#
+#     def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+#         self.last_demo_count = {agent: 0 for agent in agents}
+#
+#     def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+#                     is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+#         rewards = {}
+#
+#         for agent in agents:
+#             car = state.cars[agent]
+#             current_demos = car.demolitions
+#
+#             if current_demos > self.last_demo_count[agent]:
+#                 # Demo réussie !
+#                 rewards[agent] = 12.0  # Gros reward pour demo stratégique
+#                 self.last_demo_count[agent] = current_demos
+#             else:
+#                 rewards[agent] = 0.0
+#
+#         return rewards
+
+
+# ============================================================================
+# REWARD FUNCTIONS - BOOST MANAGEMENT & SMART PLAY
+# ============================================================================
+
+class BoostManagementReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense le boost management intelligent - ne pas gaspiller"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.last_boost = {agent: 33 for agent in agents}
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+
+        for agent in agents:
+            car = state.cars[agent]
+            current_boost = car.boost_amount
+            dist_to_ball = np.linalg.norm(state.ball.position - car.physics.position)
+
+            # Pénalité pour boost gaspillé loin de la balle
+            if car.is_boosting and dist_to_ball > 2000:
+                rewards[agent] = -0.3  # Pénalité légère pour gaspillage
+            # Récompense pour garder du boost en réserve
+            elif current_boost > 40:
+                rewards[agent] = 0.5  # Bonus pour avoir du boost
+            # Récompense pour récupérer du boost intelligemment
+            elif current_boost > self.last_boost[agent] + 10:
+                rewards[agent] = 1.0  # A ramassé du boost
+            else:
+                rewards[agent] = 0.0
+
+            self.last_boost[agent] = current_boost
+
+        return rewards
+
+
+class SmallPadCollectionReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense la collecte de petits pads - efficacité pro"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.last_boost = {agent: 33 for agent in agents}
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+
+        for agent in agents:
+            car = state.cars[agent]
+            current_boost = car.boost_amount
+            boost_gained = current_boost - self.last_boost[agent]
+
+            # Détection collecte de petit pad (gain de 12 boost)
+            if 10 <= boost_gained <= 14:
+                rewards[agent] = 1.5  # Reward pour petit pad
+            # Détection gros pad (gain de 100 boost)
+            elif boost_gained > 80:
+                # Moins de reward que petit pad = encourager efficacité
+                rewards[agent] = 1.0
+            else:
+                rewards[agent] = 0.0
+
+            self.last_boost[agent] = current_boost
+
+        return rewards
+
+
+class PatienceReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense la patience - ne pas ballchase comme un plat"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.wait_time = {agent: 0 for agent in agents}
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+        ball_pos = state.ball.position
+
+        for agent in agents:
+            car = state.cars[agent]
+            car_pos = car.physics.position
+            car_speed = np.linalg.norm(car.physics.linear_velocity)
+            dist_to_ball = np.linalg.norm(ball_pos - car_pos)
+
+            # Si loin de la balle et pas en train de rusher = patience
+            if dist_to_ball > 1500 and car_speed < 1500:
+                self.wait_time[agent] += 1
+                # Reward pour attendre le bon moment
+                rewards[agent] = min(self.wait_time[agent] * 0.05, 1.5)
+            # Si proche de la balle = action
+            elif dist_to_ball < 800:
+                self.wait_time[agent] = 0
+                rewards[agent] = 0.0
+            else:
+                self.wait_time[agent] = max(0, self.wait_time[agent] - 1)
+                rewards[agent] = 0.0
+
+        return rewards
+
+
+class ChallengeTimingReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense le timing des challenges - attendre le bon moment"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.last_touches = {agent: 0 for agent in agents}
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+        ball_vel = np.linalg.norm(state.ball.linear_velocity)
+
+        for agent in agents:
+            car = state.cars[agent]
+            current_touches = car.ball_touches
+
+            if current_touches > self.last_touches[agent]:
+                # Challenge détecté
+                # Bon challenge = balle lente (mauvais contrôle adverse)
+                if ball_vel < 800:
+                    rewards[agent] = 3.0  # Bon timing de challenge
+                # Mauvais challenge = balle rapide
+                elif ball_vel > 1800:
+                    rewards[agent] = -1.0  # Pénalité pour mauvais challenge
+                else:
+                    rewards[agent] = 0.0
+
+                self.last_touches[agent] = current_touches
+            else:
+                rewards[agent] = 0.0
+
+        return rewards
+
+
+class GroundedPlayReward(RewardFunction[AgentID, GameState, float]):
+    """Récompense le jeu au sol quand approprié - pas aerial spam"""
+
+    def reset(self, agents: List[AgentID], initial_state: GameState, shared_info: Dict[str, Any]) -> None:
+        self.last_touches = {agent: 0 for agent in agents}
+
+    def get_rewards(self, agents: List[AgentID], state: GameState, is_terminated: Dict[AgentID, bool],
+                    is_truncated: Dict[AgentID, bool], shared_info: Dict[str, Any]) -> Dict[AgentID, float]:
+        rewards = {}
+        ball_height = state.ball.position[2]
+
+        for agent in agents:
+            car = state.cars[agent]
+            current_touches = car.ball_touches
+            car_height = car.physics.position[2]
+
+            # Touche au sol quand balle basse = intelligent
+            if current_touches > self.last_touches[agent]:
+                if ball_height < 200 and car_height < 50:
+                    # Jeu au sol efficace
+                    rewards[agent] = 2.0
+                # Pénalité si aerial inutile (balle basse mais voiture haute)
+                elif ball_height < 150 and car_height > 300:
+                    rewards[agent] = -0.5  # Aerial gaspillé
+                else:
+                    rewards[agent] = 0.0
+
+                self.last_touches[agent] = current_touches
+            else:
+                rewards[agent] = 0.0
+
+        return rewards
+
+
+# ============================================================================
 # REWARD FUNCTIONS - AUTRES MÉCANIQUES AVANCÉES
 # ============================================================================
 
@@ -1194,12 +1588,25 @@ def build_rlgym_v2_env():
         TimeoutCondition(timeout_seconds=game_timeout_seconds)
     )
 
-    # SYSTÈME DE REWARDS ULTRA-COMPLET POUR SSL+++
+    # SYSTÈME DE REWARDS ULTRA-COMPLET POUR SSL+++ (STYLE PRO)
     reward_fn = CombinedReward(
         # BASES FONDAMENTALES
         (VelocityPlayerToBallReward(), 0.2),
         (FaceBallReward(), 0.3),
         (VelocityBallToGoalReward(), 6.0),
+
+        # JEU D'ÉQUIPE PRO (2v2) - NOUVEAU !
+        (PassingReward(), 10.0),  # Passes entre coéquipiers
+        (RotationReward(), 3.0),  # Un attaque, un défend
+        (SmartPositioningReward(), 2.5),  # Positionnement intelligent
+        # (DemoPlayReward(), 8.0),  # DÉSACTIVÉ - attribut 'demolitions' n'existe pas
+
+        # BOOST MANAGEMENT & SMART PLAY - NOUVEAU !
+        (BoostManagementReward(), 1.5),  # Ne pas gaspiller le boost
+        (SmallPadCollectionReward(), 2.0),  # Efficacité (petits pads)
+        (PatienceReward(), 2.0),  # Ne pas ballchase
+        (ChallengeTimingReward(), 4.0),  # Bon timing de challenge
+        (GroundedPlayReward(), 1.5),  # Jeu au sol quand approprié
 
         # POWERSHOTS (TOUTES VARIATIONS)
         (PowershotReward(), 12.0),
@@ -1280,7 +1687,7 @@ if __name__ == "__main__":
     checkpoint_dir = find_best_checkpoint()
 
     print("=" * 80)
-    print("ZENITOBOT PRO TRAINING - SSL+++ MECHANICS MASTERY")
+    print("ZENITOBOT PRO TRAINING - SSL+++ MECHANICS + PRO GAMEPLAY")
     print("=" * 80)
     if checkpoint_dir:
         print(f"Resuming from checkpoint: {checkpoint_dir}")
@@ -1308,6 +1715,16 @@ if __name__ == "__main__":
     print("  - Flip cancels")
     print("  - Turtle shots")
     print("  - Stalls")
+    print(f"\nPRO GAMEPLAY (NOUVEAU):")
+    print("  - Passing entre coequipiers")
+    print("  - Rotation intelligente (2v2)")
+    print("  - Positionnement strategique")
+    print("  - Demos tactiques")
+    print("  - Boost management")
+    print("  - Collecte petits pads")
+    print("  - Patience (anti-ballchase)")
+    print("  - Challenge timing")
+    print("  - Jeu au sol approprie")
     print("=" * 80)
 
     # Configuration optimale pour training pro
@@ -1348,8 +1765,8 @@ if __name__ == "__main__":
         # Plus d'epochs pour mieux apprendre les mécaniques complexes
         ppo_epochs=6,
 
-        # Device (CPU-only since CUDA not available)
-        device="cpu",
+        # Device (CUDA enabled - RTX 4070)
+        device="cuda",
 
         # Training settings
         standardize_returns=True,
