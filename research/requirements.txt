@@ -1,0 +1,17 @@
+# Dépendances pour le mode Recherche Online
+# Installation: pip install -r requirements.txt
+
+# Core dependencies (déjà installées pour RLBot)
+numpy
+torch
+
+# Memory reading
+psutil  # Pour trouver le processus Rocket League
+
+# Input simulation
+vgamepad  # Manette virtuelle Xbox 360
+# IMPORTANT: Nécessite ViGEmBus driver:
+# https://github.com/ViGEm/ViGEmBus/releases
+
+# Optional: Cheat Engine replacement (plus avancé)
+# pymem  # Alternative pour memory reading
